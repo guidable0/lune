@@ -1,3 +1,5 @@
+use std::sync::Weak;
+
 use futures_util::Future;
 use mlua::prelude::*;
 
@@ -27,19 +29,12 @@ pub(crate) trait LuaSchedulerExt<'lua> {
     where
         A: FromLuaMulti<'lua>,
         R: IntoLuaMulti<'lua>,
-        F: Fn(&'lua Lua, A) -> FR + 'lua,
+        F: Copy + Fn(&'lua Lua, A) -> FR + 'static,
         FR: Future<Output = LuaResult<R>> + 'lua;
 }
 
-// FIXME: `self` escapes outside of method because we are borrowing `func`
-// when we call `schedule_future_thread` in the lua function body below
-// For now we solve this by using the 'static lifetime bound in the impl
-impl<'lua> LuaSchedulerExt<'lua> for Lua
-where
-    'lua: 'static,
-{
+impl<'lua> LuaSchedulerExt<'lua> for Lua {
     fn set_scheduler(&'lua self, scheduler: &'lua Scheduler) {
-        self.set_app_data(scheduler);
         scheduler.set_interrupt_for(self);
     }
 
@@ -47,12 +42,9 @@ where
     where
         A: FromLuaMulti<'lua>,
         R: IntoLuaMulti<'lua>,
-        F: Fn(&'lua Lua, A) -> FR + 'lua,
+        F: Copy + Fn(&'lua Lua, A) -> FR + 'static,
         FR: Future<Output = LuaResult<R>> + 'lua,
     {
-        self.app_data_ref::<&Scheduler>()
-            .expect("Lua must have a scheduler to create async functions");
-
         let async_env = self.create_table_with_capacity(0, 2)?;
 
         async_env.set(
@@ -68,8 +60,10 @@ where
                 let thread = lua.current_thread();
                 let future = func(lua, args);
                 let sched = lua
-                    .app_data_ref::<&Scheduler>()
-                    .expect("Lua struct is missing scheduler");
+                    .app_data_ref::<Weak<Scheduler>>()
+                    .expect("Lua struct is missing scheduler")
+                    .upgrade()
+                    .expect("Lua struct dropped scheduler");
                 sched.spawn_thread(lua, thread, future)?;
                 Ok(())
             }),

@@ -26,10 +26,7 @@ pub enum LuneBuiltin {
     Roblox,
 }
 
-impl<'lua> LuneBuiltin
-where
-    'lua: 'static, // FIXME: Remove static lifetime bound here when builtin libraries no longer need it
-{
+impl<'lua> LuneBuiltin {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Fs => "fs",

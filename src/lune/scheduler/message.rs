@@ -8,22 +8,8 @@ use super::state::SchedulerState;
 pub(crate) enum SchedulerMessage {
     ExitCodeSet,
     PushedLuaThread,
-    SpawnedLuaFuture,
-    SpawnedBackgroundFuture,
-}
-
-impl SchedulerMessage {
-    pub fn should_break_futures(self) -> bool {
-        matches!(self, Self::ExitCodeSet | Self::PushedLuaThread)
-    }
-
-    pub fn should_break_lua_futures(self) -> bool {
-        self.should_break_futures() || matches!(self, Self::SpawnedBackgroundFuture)
-    }
-
-    pub fn should_break_background_futures(self) -> bool {
-        self.should_break_futures() || matches!(self, Self::SpawnedLuaFuture)
-    }
+    FutureSpawned,
+    FutureCompleted,
 }
 
 /**
@@ -56,12 +42,12 @@ impl SchedulerMessageSender {
         self.0.send(SchedulerMessage::PushedLuaThread).ok();
     }
 
-    pub fn send_spawned_lua_future(&self) {
-        self.0.send(SchedulerMessage::SpawnedLuaFuture).ok();
+    pub fn send_future_spawned(&self) {
+        self.0.send(SchedulerMessage::FutureSpawned).ok();
     }
 
-    pub fn send_spawned_background_future(&self) {
-        self.0.send(SchedulerMessage::SpawnedBackgroundFuture).ok();
+    pub fn send_future_completed(&self) {
+        self.0.send(SchedulerMessage::FutureCompleted).ok();
     }
 }
 

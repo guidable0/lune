@@ -1,4 +1,9 @@
-use std::{collections::HashMap, convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    net::SocketAddr,
+    sync::{Arc, Weak},
+};
 
 use hyper::{
     server::{conn::AddrIncoming, Builder},
@@ -40,14 +45,22 @@ pub(super) fn bind_to_localhost(port: u16) -> LuaResult<Builder<AddrIncoming>> {
 }
 
 pub(super) fn create_server<'lua>(
-    lua: &'lua Lua,
-    sched: &'lua Scheduler,
+    lua_outer: &'lua Lua,
     config: ServeConfig<'lua>,
     builder: Builder<AddrIncoming>,
-) -> LuaResult<LuaTable<'lua>>
-where
-    'lua: 'static, // FIXME: Get rid of static lifetime bound here
-{
+) -> LuaResult<LuaTable<'lua>> {
+    let lua = lua_outer
+        .app_data_ref::<Weak<Lua>>()
+        .expect("Lua struct is missing lua")
+        .upgrade()
+        .expect("Lua struct dropped lua");
+    let sched = lua_outer
+        .app_data_ref::<Weak<Scheduler>>()
+        .expect("Lua struct is missing scheduler")
+        .upgrade()
+        .expect("Lua struct dropped scheduler");
+    let sched_outer = Arc::clone(&sched);
+
     // Note that we need to use a mpsc here and not
     // a oneshot channel since we move the sender
     // into our table with the stop function
@@ -109,7 +122,7 @@ where
     });
 
     // Start up our service
-    sched.spawn(async move {
+    sched_outer.spawn(async move {
         let result = builder
             .http1_only(true) // Web sockets can only use http1
             .http1_keepalive(true) // Web sockets must be kept alive
@@ -123,7 +136,8 @@ where
     });
 
     // Spawn a local thread with access to lua and the same lifetime
-    sched.spawn_local(async move {
+    sched_outer.spawn_local(async move {
+        println!("Listening for requests");
         loop {
             // Wait for either a request or a websocket to handle,
             // if we got neither it means both channels were dropped
@@ -141,12 +155,12 @@ where
                     (Some(req), _) => {
                         let req_id = req.id;
                         let req_handler = config.handle_request.clone();
-                        let req_table = req.into_lua_table(lua)?;
+                        let req_table = req.into_lua_table(&lua)?;
 
-                        let thread_id = sched.push_back(lua, req_handler, req_table)?;
-                        let thread_res = sched.wait_for_thread(lua, thread_id).await?;
+                        let thread_id = sched.push_back(&lua, req_handler, req_table)?;
+                        let thread_res = sched.wait_for_thread(&lua, thread_id).await?;
 
-                        let response = NetServeResponse::from_lua_multi(thread_res, lua)?;
+                        let response = NetServeResponse::from_lua_multi(thread_res, &lua)?;
                         let response_sender = response_senders_lua
                             .lock()
                             .await
@@ -168,13 +182,13 @@ where
                             .as_ref()
                             .cloned()
                             .expect("Got web socket but web socket handler is missing");
-                        let sock_table = NetWebSocket::new(sock).into_lua_table(lua)?;
+                        let sock_table = NetWebSocket::new(sock).into_lua_table(&lua)?;
 
                         // NOTE: Web socket handler does not need to send any
                         // response back, the websocket upgrade response is
                         // automatically sent above in the background thread(s)
-                        let thread_id = sched.push_back(lua, sock_handler, sock_table)?;
-                        let _thread_res = sched.wait_for_thread(lua, thread_id).await?;
+                        let thread_id = sched.push_back(&lua, sock_handler, sock_table)?;
+                        let _thread_res = sched.wait_for_thread(&lua, thread_id).await?;
 
                         Ok(false)
                     }
@@ -187,6 +201,7 @@ where
                 Err(e) => lua.emit_error(e),
             }
         }
+        println!("Finished listening for requests");
     });
 
     // Create a new read-only table that contains methods
@@ -197,7 +212,7 @@ where
             "Server has already been stopped".to_string(),
         )),
     };
-    TableBuilder::new(lua)?
+    TableBuilder::new(lua_outer)?
         .with_function("stop", handle_stop)?
         .build_readonly()
 }

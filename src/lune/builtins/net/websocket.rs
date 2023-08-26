@@ -88,7 +88,7 @@ where
 
 type NetWebSocketStreamClient = MaybeTlsStream<TcpStream>;
 impl NetWebSocket<NetWebSocketStreamClient> {
-    pub fn into_lua_table(self, lua: &'static Lua) -> LuaResult<LuaTable> {
+    pub fn into_lua_table(self, lua: &Lua) -> LuaResult<LuaTable> {
         let setmetatable = lua.globals().get::<_, LuaFunction>("setmetatable")?;
         let table_freeze = lua
             .globals()
@@ -109,7 +109,7 @@ impl NetWebSocket<NetWebSocketStreamClient> {
 
 type NetWebSocketStreamServer = Upgraded;
 impl NetWebSocket<NetWebSocketStreamServer> {
-    pub fn into_lua_table(self, lua: &'static Lua) -> LuaResult<LuaTable> {
+    pub fn into_lua_table(self, lua: &Lua) -> LuaResult<LuaTable> {
         let setmetatable = lua.globals().get::<_, LuaFunction>("setmetatable")?;
         let table_freeze = lua
             .globals()

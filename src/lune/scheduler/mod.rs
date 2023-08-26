@@ -1,12 +1,13 @@
 use std::{
     collections::{HashMap, VecDeque},
-    pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
 
-use futures_util::{stream::FuturesUnordered, Future};
 use mlua::prelude::*;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::{runtime::Runtime, task::LocalSet};
 
 mod message;
 mod state;
@@ -25,52 +26,40 @@ use self::{
     thread::{SchedulerThread, SchedulerThreadSender},
 };
 
-type SchedulerFuture<'fut> = Pin<Box<dyn Future<Output = ()> + 'fut>>;
-
 /**
     Scheduler for Lua threads and futures.
-
-    This scheduler can be cheaply cloned and the underlying state
-    and data will remain unchanged and accessible from all clones.
 */
-#[derive(Debug, Clone)]
-pub(crate) struct Scheduler<'fut> {
-    state: Arc<SchedulerState>,
-    threads: Arc<AsyncMutex<VecDeque<SchedulerThread>>>,
-    thread_senders: Arc<AsyncMutex<HashMap<SchedulerThreadId, SchedulerThreadSender>>>,
-    /*
-        FUTURE: Get rid of these, let the tokio runtime handle running
-        and resumption of futures completely, just use our scheduler
-        state and receiver to know when we have run to completion.
-        If we have no senders left, we have run to completion.
-
-        Once we no longer store futures in our scheduler, we can
-        get rid of the lifetime on it, store it in our lua app
-        data as a Weak<Scheduler>, together with a Weak<Lua>.
-
-        In our lua async functions we can then get a reference to this,
-        upgrade it to an Arc<Scheduler> and Arc<Lua> to extend lifetimes,
-        and hopefully get rid of Box::leak and 'static lifetimes for good.
-
-        Relevant comment on the mlua repository:
-        https://github.com/khvzak/mlua/issues/169#issuecomment-1138863979
-    */
-    futures_lua: Arc<AsyncMutex<FuturesUnordered<SchedulerFuture<'fut>>>>,
-    futures_background: Arc<AsyncMutex<FuturesUnordered<SchedulerFuture<'static>>>>,
+#[derive(Debug)]
+pub(crate) struct Scheduler {
+    runtime: Runtime,
+    local_set: LocalSet,
+    state: SchedulerState,
+    threads: Arc<Mutex<VecDeque<SchedulerThread>>>,
+    thread_senders: Arc<Mutex<HashMap<SchedulerThreadId, SchedulerThreadSender>>>,
 }
 
-impl<'fut> Scheduler<'fut> {
+impl Scheduler {
     /**
         Creates a new scheduler.
     */
-    #[allow(clippy::arc_with_non_send_sync)] // FIXME: Clippy lints our tokio mutexes that are definitely Send + Sync
     pub fn new() -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name_fn(|| {
+                static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+                let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                format!("lune-threadpool-{}", id)
+            })
+            .build()
+            .expect("Failed to create runtime");
+        let local_set = LocalSet::new();
+
         Self {
-            state: Arc::new(SchedulerState::new()),
-            threads: Arc::new(AsyncMutex::new(VecDeque::new())),
-            thread_senders: Arc::new(AsyncMutex::new(HashMap::new())),
-            futures_lua: Arc::new(AsyncMutex::new(FuturesUnordered::new())),
-            futures_background: Arc::new(AsyncMutex::new(FuturesUnordered::new())),
+            runtime,
+            local_set,
+            state: SchedulerState::new(),
+            threads: Arc::new(Mutex::new(VecDeque::new())),
+            thread_senders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -107,10 +96,5 @@ impl<'fut> Scheduler<'fut> {
             "Exit code may only be set exactly once"
         );
         self.state.set_exit_code(code.into());
-    }
-
-    #[doc(hidden)]
-    pub fn into_static(self) -> &'static Self {
-        Box::leak(Box::new(self))
     }
 }

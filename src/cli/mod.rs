@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use lune::Lune;
-use tokio::{
+use std::{
     fs::read as read_to_vec,
-    io::{stdin, AsyncReadExt},
+    io::{stdin, Read as _},
 };
 
 pub(crate) mod gen;
@@ -79,18 +79,18 @@ impl Cli {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn run(self) -> Result<ExitCode> {
+    pub fn run(self) -> Result<ExitCode> {
         // List files in `lune` and `.lune` directories, if wanted
         // This will also exit early and not run anything else
         if self.list {
-            let sorted_relative = match find_lune_scripts(false).await {
+            let sorted_relative = match find_lune_scripts(false) {
                 Ok(scripts) => sort_lune_scripts(scripts),
                 Err(e) => {
                     eprintln!("{e}");
                     return Ok(ExitCode::FAILURE);
                 }
             };
-            let sorted_home_dir = match find_lune_scripts(true).await {
+            let sorted_home_dir = match find_lune_scripts(true) {
                 Ok(scripts) => sort_lune_scripts(scripts),
                 Err(e) => {
                     eprintln!("{e}");
@@ -138,7 +138,7 @@ impl Cli {
                 return Ok(ExitCode::FAILURE);
             }
             if self.setup {
-                run_setup().await;
+                run_setup();
             }
         }
         if self.script_path.is_none() {
@@ -149,7 +149,7 @@ impl Cli {
             }
             // If we did not generate any typedefs we know that the user did not
             // provide any other options, and in that case we should enter the REPL
-            return repl::show_interface().await;
+            return repl::show_interface();
         }
         // Figure out if we should read from stdin or from a file,
         // reading from stdin is marked by passing a single "-"
@@ -159,12 +159,11 @@ impl Cli {
             let mut stdin_contents = Vec::new();
             stdin()
                 .read_to_end(&mut stdin_contents)
-                .await
                 .context("Failed to read script contents from stdin")?;
             ("stdin".to_string(), stdin_contents)
         } else {
             let file_path = discover_script_path_including_lune_dirs(&script_path)?;
-            let file_contents = read_to_vec(&file_path).await?;
+            let file_contents = read_to_vec(&file_path)?;
             // NOTE: We skip the extension here to remove it from stack traces
             let file_display_name = file_path.with_extension("").display().to_string();
             (file_display_name, file_contents)
@@ -172,8 +171,7 @@ impl Cli {
         // Create a new lune object with all globals & run the script
         let result = Lune::new()
             .with_args(self.script_args)
-            .run(&script_display_name, strip_shebang(script_contents))
-            .await;
+            .run(&script_display_name, strip_shebang(script_contents));
         Ok(match result {
             Err(err) => {
                 eprintln!("{err}");

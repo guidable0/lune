@@ -14,7 +14,7 @@ enum PromptState {
     Continuation,
 }
 
-pub async fn show_interface() -> Result<ExitCode> {
+pub fn show_interface() -> Result<ExitCode> {
     println!("{MESSAGE_WELCOME}");
 
     let history_file_path: &PathBuf = &UserDirs::new()
@@ -22,7 +22,7 @@ pub async fn show_interface() -> Result<ExitCode> {
         .home_dir()
         .join(".lune_history");
     if !history_file_path.exists() {
-        tokio::fs::write(history_file_path, &[]).await?;
+        std::fs::write(history_file_path, [])?;
     }
 
     let mut repl = DefaultEditor::new()?;
@@ -77,8 +77,7 @@ pub async fn show_interface() -> Result<ExitCode> {
             }
         };
 
-        // TODO: Preserve context here somehow?
-        let eval_result = lune_instance.run("REPL", &source_code).await;
+        let eval_result = lune_instance.run("REPL", &source_code);
 
         match eval_result {
             Ok(_) => prompt_state = PromptState::Regular,

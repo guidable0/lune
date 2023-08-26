@@ -1,33 +1,33 @@
-use std::{cmp::Ordering, ffi::OsStr, fmt::Write as _, path::PathBuf};
+use std::{cmp::Ordering, ffi::OsStr, fmt::Write as _, fs, io, path::PathBuf};
 
 use anyhow::{bail, Result};
 use console::Style;
 use directories::UserDirs;
 use once_cell::sync::Lazy;
-use tokio::{fs, io};
 
 use super::files::parse_lune_description_from_file;
 
 pub static COLOR_BLUE: Lazy<Style> = Lazy::new(|| Style::new().blue());
 pub static STYLE_DIM: Lazy<Style> = Lazy::new(|| Style::new().dim());
 
-pub async fn find_lune_scripts(in_home_dir: bool) -> Result<Vec<(String, String)>> {
+pub fn find_lune_scripts(in_home_dir: bool) -> Result<Vec<(String, String)>> {
     let base_path = if in_home_dir {
         UserDirs::new().unwrap().home_dir().to_path_buf()
     } else {
         PathBuf::new()
     };
-    let mut lune_dir = fs::read_dir(base_path.join("lune")).await;
+    let mut lune_dir = fs::read_dir(base_path.join("lune"));
     if lune_dir.is_err() {
-        lune_dir = fs::read_dir(base_path.join(".lune")).await;
+        lune_dir = fs::read_dir(base_path.join(".lune"));
     }
     match lune_dir {
-        Ok(mut dir) => {
+        Ok(dir) => {
             let mut files = Vec::new();
-            while let Some(entry) = dir.next_entry().await? {
-                let meta = entry.metadata().await?;
+            for entry in dir {
+                let entry = entry?;
+                let meta = entry.metadata()?;
                 if meta.is_file() {
-                    let contents = fs::read(entry.path()).await?;
+                    let contents = fs::read(entry.path())?;
                     files.push((entry, meta, contents));
                 }
             }

@@ -6,7 +6,7 @@ use crate::lune::{
     util::formatting::{format_label, pretty_format_multi_value},
 };
 
-pub fn create(lua: &'static Lua) -> LuaResult<impl IntoLua<'_>> {
+pub fn create(lua: &Lua) -> LuaResult<impl IntoLua<'_>> {
     lua.create_async_function(|_, args: LuaMultiValue| async move {
         let formatted = format!(
             "{}\n{}",

@@ -1,9 +1,9 @@
+use std::fs::read_to_string;
 use std::process::ExitCode;
 
 use anyhow::Result;
 use console::set_colors_enabled;
 use console::set_colors_enabled_stderr;
-use tokio::fs::read_to_string;
 
 use crate::Lune;
 
@@ -11,15 +11,15 @@ const ARGS: &[&str] = &["Foo", "Bar"];
 
 macro_rules! create_tests {
     ($($name:ident: $value:expr,)*) => { $(
-        #[tokio::test(flavor = "multi_thread")]
-        async fn $name() -> Result<ExitCode> {
+        #[test]
+        fn $name() -> Result<ExitCode> {
             // Disable styling for stdout and stderr since
             // some tests rely on output not being styled
             set_colors_enabled(false);
             set_colors_enabled_stderr(false);
             // The rest of the test logic can continue as normal
             let full_name = format!("tests/{}.luau", $value);
-            let script = read_to_string(&full_name).await?;
+            let script = read_to_string(&full_name)?;
             let mut lune = Lune::new().with_args(
                 ARGS
                     .clone()
@@ -31,7 +31,7 @@ macro_rules! create_tests {
 				.trim_end_matches(".luau")
 				.trim_end_matches(".lua")
 				.to_string();
-            let exit_code = lune.run(&script_name, &script).await?;
+            let exit_code = lune.run(&script_name, &script)?;
             Ok(exit_code)
         }
     )* }

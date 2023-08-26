@@ -2,14 +2,12 @@ use mlua::prelude::*;
 
 use super::context::*;
 
-pub(super) async fn require<'lua, 'ctx>(
-    _ctx: &'ctx RequireContext<'lua>,
+pub(super) async fn require<'lua>(
+    _lua: &'lua Lua,
+    _ctx: &RequireContext,
     alias: &str,
     name: &str,
-) -> LuaResult<LuaMultiValue<'lua>>
-where
-    'lua: 'ctx,
-{
+) -> LuaResult<LuaMultiValue<'lua>> {
     Err(LuaError::runtime(format!(
         "TODO: Support require for built-in libraries (tried to require '{name}' with alias '{alias}')"
     )))

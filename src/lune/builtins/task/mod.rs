@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use mlua::prelude::*;
 
@@ -27,7 +30,7 @@ yield()
 return thread
 "#;
 
-pub fn create(lua: &'static Lua) -> LuaResult<LuaTable<'_>> {
+pub fn create(lua: &Lua) -> LuaResult<LuaTable<'_>> {
     let coroutine_running = lua
         .globals()
         .get::<_, LuaTable>("coroutine")?
@@ -40,8 +43,10 @@ pub fn create(lua: &'static Lua) -> LuaResult<LuaTable<'_>> {
         lua.create_function(|lua, (tof, args): (LuaThreadOrFunction, LuaMultiValue)| {
             let thread = tof.into_thread(lua)?;
             let sched = lua
-                .app_data_ref::<&Scheduler>()
-                .expect("Lua struct is missing scheduler");
+                .app_data_ref::<Weak<Scheduler>>()
+                .expect("Lua struct is missing scheduler")
+                .upgrade()
+                .expect("Lua struct dropped scheduler");
             sched.push_front(lua, thread.clone(), args)?;
             Ok(thread)
         })?;
@@ -83,32 +88,31 @@ fn task_defer<'lua>(
 ) -> LuaResult<LuaThread<'lua>> {
     let thread = tof.into_thread(lua)?;
     let sched = lua
-        .app_data_ref::<&Scheduler>()
-        .expect("Lua struct is missing scheduler");
+        .app_data_ref::<Weak<Scheduler>>()
+        .expect("Lua struct is missing scheduler")
+        .upgrade()
+        .expect("Lua struct dropped scheduler");
     sched.push_back(lua, thread.clone(), args)?;
     Ok(thread)
 }
 
-// FIXME: `self` escapes outside of method because we are borrowing `tof` and
-// `args` when we call `schedule_future_thread` in the lua function body below
-// For now we solve this by using the 'static lifetime bound in the impl
 fn task_delay<'lua>(
     lua: &'lua Lua,
     (secs, tof, args): (f64, LuaThreadOrFunction<'lua>, LuaMultiValue<'lua>),
-) -> LuaResult<LuaThread<'lua>>
-where
-    'lua: 'static,
-{
+) -> LuaResult<LuaThread<'lua>> {
     let thread = tof.into_thread(lua)?;
     let sched = lua
-        .app_data_ref::<&Scheduler>()
-        .expect("Lua struct is missing scheduler");
+        .app_data_ref::<Weak<Scheduler>>()
+        .expect("Lua struct is missing scheduler")
+        .upgrade()
+        .expect("Lua struct dropped scheduler");
 
     let thread2 = thread.clone();
+    let sched2 = Arc::clone(&sched);
     sched.spawn_thread(lua, thread.clone(), async move {
         let duration = Duration::from_secs_f64(secs);
         time::sleep(duration).await;
-        sched.push_back(lua, thread2, args)?;
+        sched2.push_back(lua, thread2, args)?;
         Ok(())
     })?;
 

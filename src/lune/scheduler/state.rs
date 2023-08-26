@@ -21,12 +21,13 @@ use super::{
     This scheduler state uses atomic operations for everything
     except lua error storage, and is completely thread safe.
 */
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct SchedulerState {
-    exit_state: AtomicBool,
-    exit_code: AtomicU8,
-    num_resumptions: AtomicUsize,
-    num_errors: AtomicUsize,
+    exit_state: Arc<AtomicBool>,
+    exit_code: Arc<AtomicU8>,
+    num_resumptions: Arc<AtomicUsize>,
+    num_futures: Arc<AtomicUsize>,
+    num_errors: Arc<AtomicUsize>,
     thread_id: Arc<Mutex<Option<SchedulerThreadId>>>,
     thread_errors: Arc<Mutex<HashMap<SchedulerThreadId, LuaError>>>,
     pub(super) message_sender: Arc<Mutex<UnboundedSender<SchedulerMessage>>>,
@@ -41,15 +42,40 @@ impl SchedulerState {
         let (message_sender, message_receiver) = unbounded_channel();
 
         Self {
-            exit_state: AtomicBool::new(false),
-            exit_code: AtomicU8::new(0),
-            num_resumptions: AtomicUsize::new(0),
-            num_errors: AtomicUsize::new(0),
+            exit_state: Arc::new(AtomicBool::new(false)),
+            exit_code: Arc::new(AtomicU8::new(0)),
+            num_resumptions: Arc::new(AtomicUsize::new(0)),
+            num_futures: Arc::new(AtomicUsize::new(0)),
+            num_errors: Arc::new(AtomicUsize::new(0)),
             thread_id: Arc::new(Mutex::new(None)),
             thread_errors: Arc::new(Mutex::new(HashMap::new())),
             message_sender: Arc::new(Mutex::new(message_sender)),
             message_receiver: Arc::new(Mutex::new(message_receiver)),
         }
+    }
+
+    /**
+        Checks if there are any currently active futures.
+    */
+    pub fn has_futures(&self) -> bool {
+        self.num_futures.load(Ordering::SeqCst) > 0
+    }
+
+    /**
+        Increments the total futures count for the scheduler.
+    */
+    pub fn increment_future_count(&self) {
+        self.num_futures.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /**
+        Increments the total futures count for the scheduler.
+    */
+    pub fn decrement_future_count(&self) {
+        assert!(
+            self.num_futures.fetch_sub(1, Ordering::SeqCst) > 0,
+            "Tried to decrement more futures than have been incremented"
+        )
     }
 
     /**

@@ -4,7 +4,7 @@ use mlua::prelude::*;
 
 use hyper::header::{CONTENT_ENCODING, CONTENT_LENGTH};
 
-use crate::lune::{scheduler::Scheduler, util::TableBuilder};
+use crate::lune::util::TableBuilder;
 
 use self::server::create_server;
 
@@ -25,7 +25,7 @@ use config::{RequestConfig, ServeConfig};
 use server::bind_to_localhost;
 use websocket::NetWebSocket;
 
-pub fn create(lua: &'static Lua) -> LuaResult<LuaTable> {
+pub fn create(lua: &Lua) -> LuaResult<LuaTable> {
     NetClientBuilder::new()
         .headers(&[("User-Agent", create_user_agent_header())])?
         .build()?
@@ -61,10 +61,10 @@ fn net_json_decode<'lua>(lua: &'lua Lua, json: LuaString<'lua>) -> LuaResult<Lua
     EncodeDecodeConfig::from(EncodeDecodeFormat::Json).deserialize_from_string(lua, json)
 }
 
-async fn net_request<'lua>(lua: &'lua Lua, config: RequestConfig<'lua>) -> LuaResult<LuaTable<'lua>>
-where
-    'lua: 'static, // FIXME: Get rid of static lifetime bound here
-{
+async fn net_request<'lua>(
+    lua: &'lua Lua,
+    config: RequestConfig<'lua>,
+) -> LuaResult<LuaTable<'lua>> {
     // Create and send the request
     let client = NetClient::from_registry(lua);
     let mut request = client.request(config.method, &config.url);
@@ -124,10 +124,7 @@ where
         .build_readonly()
 }
 
-async fn net_socket<'lua>(lua: &'lua Lua, url: String) -> LuaResult<LuaTable>
-where
-    'lua: 'static, // FIXME: Get rid of static lifetime bound here
-{
+async fn net_socket(lua: &Lua, url: String) -> LuaResult<LuaTable> {
     let (ws, _) = tokio_tungstenite::connect_async(url).await.into_lua_err()?;
     NetWebSocket::new(ws).into_lua_table(lua)
 }
@@ -135,17 +132,9 @@ where
 async fn net_serve<'lua>(
     lua: &'lua Lua,
     (port, config): (u16, ServeConfig<'lua>),
-) -> LuaResult<LuaTable<'lua>>
-where
-    'lua: 'static, // FIXME: Get rid of static lifetime bound here
-{
-    let sched = lua
-        .app_data_ref::<&Scheduler>()
-        .expect("Lua struct is missing scheduler");
-
+) -> LuaResult<LuaTable<'lua>> {
     let builder = bind_to_localhost(port)?;
-
-    create_server(lua, &sched, config, builder)
+    create_server(lua, config, builder)
 }
 
 fn net_url_encode<'lua>(

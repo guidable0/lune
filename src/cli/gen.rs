@@ -1,14 +1,13 @@
 use std::collections::HashMap;
+use std::fs::{create_dir_all, write};
 
 use anyhow::{Context, Result};
 use directories::UserDirs;
-use futures_util::future::try_join_all;
 use include_dir::Dir;
-use tokio::fs::{create_dir_all, write};
 
-pub async fn generate_typedef_files_from_definitions(dir: &Dir<'_>) -> Result<String> {
+pub fn generate_typedef_files_from_definitions(dir: &Dir<'_>) -> Result<String> {
     let contents = read_typedefs_dir_contents(dir);
-    write_typedef_files(contents).await
+    write_typedef_files(contents)
 }
 
 fn read_typedefs_dir_contents(dir: &Dir<'_>) -> HashMap<String, Vec<u8>> {
@@ -27,7 +26,7 @@ fn read_typedefs_dir_contents(dir: &Dir<'_>) -> HashMap<String, Vec<u8>> {
     definitions
 }
 
-async fn write_typedef_files(typedef_files: HashMap<String, Vec<u8>>) -> Result<String> {
+fn write_typedef_files(typedef_files: HashMap<String, Vec<u8>>) -> Result<String> {
     let version_string = env!("CARGO_PKG_VERSION");
     let mut dirs_to_write = Vec::new();
     let mut files_to_write = Vec::new();
@@ -47,15 +46,11 @@ async fn write_typedef_files(typedef_files: HashMap<String, Vec<u8>>) -> Result<
         files_to_write.push((builtin_name.to_lowercase(), path, builtin_typedef));
     }
     // Write all dirs and files only when we know generation was successful
-    let futs_dirs = dirs_to_write
-        .drain(..)
-        .map(create_dir_all)
-        .collect::<Vec<_>>();
-    let futs_files = files_to_write
-        .iter()
-        .map(|(_, path, contents)| write(path, contents))
-        .collect::<Vec<_>>();
-    try_join_all(futs_dirs).await?;
-    try_join_all(futs_files).await?;
+    for dir in dirs_to_write {
+        create_dir_all(dir)?;
+    }
+    for (_, path, contents) in files_to_write {
+        write(path, contents)?;
+    }
     Ok(version_string.to_string())
 }

@@ -7,7 +7,7 @@ use super::{
     IntoLuaThread, Scheduler,
 };
 
-impl<'fut> Scheduler<'fut> {
+impl Scheduler {
     /**
         Checks if there are any lua threads to run.
     */
@@ -28,8 +28,7 @@ impl<'fut> Scheduler<'fut> {
         match self
             .threads
             .try_lock()
-            .into_lua_err()
-            .context("Failed to lock threads vec")?
+            .expect("Failed to lock threads vec")
             .pop_front()
         {
             Some(thread) => Ok(Some(thread)),
@@ -55,8 +54,7 @@ impl<'fut> Scheduler<'fut> {
         self.state.set_thread_error(thread_id, err);
         self.threads
             .try_lock()
-            .into_lua_err()
-            .context("Failed to lock threads vec")?
+            .expect("Failed to lock threads vec")
             .push_front(thread);
 
         // NOTE: We might be resuming futures, need to signal that a
@@ -84,8 +82,7 @@ impl<'fut> Scheduler<'fut> {
 
         self.threads
             .try_lock()
-            .into_lua_err()
-            .context("Failed to lock threads vec")?
+            .expect("Failed to lock threads vec")
             .push_front(thread);
 
         // NOTE: We might be resuming the same thread several times and
@@ -93,8 +90,7 @@ impl<'fut> Scheduler<'fut> {
         // and we should only ever create one result sender per thread
         self.thread_senders
             .try_lock()
-            .into_lua_err()
-            .context("Failed to lock thread senders vec")?
+            .expect("Failed to lock thread senders vec")
             .entry(thread_id)
             .or_insert_with(|| SchedulerThreadSender::new(1));
 
@@ -123,8 +119,7 @@ impl<'fut> Scheduler<'fut> {
 
         self.threads
             .try_lock()
-            .into_lua_err()
-            .context("Failed to lock threads vec")?
+            .expect("Failed to lock threads vec")
             .push_back(thread);
 
         // NOTE: We might be resuming the same thread several times and
@@ -132,8 +127,7 @@ impl<'fut> Scheduler<'fut> {
         // and we should only ever create one result sender per thread
         self.thread_senders
             .try_lock()
-            .into_lua_err()
-            .context("Failed to lock thread senders vec")?
+            .expect("Failed to lock thread senders vec")
             .entry(thread_id)
             .or_insert_with(|| SchedulerThreadSender::new(1));
 
@@ -153,7 +147,10 @@ impl<'fut> Scheduler<'fut> {
         thread_id: SchedulerThreadId,
     ) -> LuaResult<LuaMultiValue<'a>> {
         let mut recv = {
-            let senders = self.thread_senders.lock().await;
+            let senders = self
+                .thread_senders
+                .try_lock()
+                .expect("Failed to lock thread senders vec");
             let sender = senders
                 .get(&thread_id)
                 .expect("Tried to wait for thread that is not queued");

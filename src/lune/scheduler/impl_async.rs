@@ -1,98 +1,61 @@
+use std::pin::Pin;
+
 use futures_util::Future;
 use mlua::prelude::*;
-use tokio::{
-    sync::oneshot::{self, Receiver},
-    task,
-};
+use tokio::task::{self, JoinHandle};
 
 use super::{IntoLuaThread, Scheduler};
 
-impl<'fut> Scheduler<'fut> {
-    /**
-        Checks if there are any futures to run, for
-        lua futures and background futures respectively.
-    */
-    pub(super) fn has_futures(&self) -> (bool, bool) {
-        (
-            self.futures_lua
-                .try_lock()
-                .expect("Failed to lock lua futures for check")
-                .len()
-                > 0,
-            self.futures_background
-                .try_lock()
-                .expect("Failed to lock background futures for check")
-                .len()
-                > 0,
-        )
-    }
+type FutureSend<'fut, O> = Pin<Box<dyn Future<Output = O> + Send + 'fut>>;
+type FutureNonSend<'fut, O> = Pin<Box<dyn Future<Output = O> + 'fut>>;
 
-    /**
-        Schedules a plain future to run in the background.
-
-        This will potentially spawn the future on a different thread, using
-        [`task::spawn`], meaning the provided future must implement [`Send`].
-
-        Returns a [`Receiver`] which may be `await`-ed
-        to retrieve the result of the spawned future.
-
-        This [`Receiver`] may be safely ignored if the result of the
-        spawned future is not needed, the future will run either way.
-    */
-    pub fn spawn<F>(&self, fut: F) -> Receiver<F::Output>
+impl Scheduler {
+    pub fn spawn<'fut, F>(&self, fut: F) -> JoinHandle<F::Output>
     where
-        F: Future + Send + 'static,
+        F: Future + Send + 'fut,
         F::Output: Send + 'static,
     {
-        let (tx, rx) = oneshot::channel();
+        /*
+            SAFETY: The scheduler struct manages the tokio runtime,
+            when the scheduler gets dropped so does the runtime, hence
+            it is guaranteed that no futures live longer than scheduler
+        */
+        let box_fut: FutureSend<'fut, F::Output> = Box::pin(fut);
+        let box_fut_2: FutureSend<'static, F::Output> = unsafe { std::mem::transmute(box_fut) };
 
-        let handle = task::spawn(async move {
-            let res = fut.await;
-            tx.send(res).ok();
-        });
-
-        // NOTE: We must spawn a future on our scheduler which awaits
-        // the handle from tokio to start driving our future properly
-        let futs = self
-            .futures_background
-            .try_lock()
-            .expect("Failed to lock futures queue for background tasks");
-        futs.push(Box::pin(async move {
-            handle.await.ok();
-        }));
-
-        // NOTE: We might be resuming lua futures, need to signal that a
-        // new background future is ready to break out of futures resumption
-        self.state.message_sender().send_spawned_background_future();
-
-        rx
+        let state = self.state.clone();
+        let sender = state.message_sender();
+        state.increment_future_count();
+        sender.send_future_spawned();
+        task::spawn(async move {
+            let result = box_fut_2.await;
+            state.decrement_future_count();
+            sender.send_future_completed();
+            result
+        })
     }
 
-    /**
-        Equivalent to [`spawn`], except the future is only
-        spawned on the Lune scheduler, and on the main thread.
-    */
-    pub fn spawn_local<F>(&self, fut: F) -> Receiver<F::Output>
+    pub fn spawn_local<'fut, F>(&self, fut: F) -> JoinHandle<F::Output>
     where
-        F: Future + 'static,
+        F: Future + 'fut,
         F::Output: 'static,
     {
-        let (tx, rx) = oneshot::channel();
+        /*
+            SAFETY: Same as above
+        */
+        let box_fut: FutureNonSend<'fut, F::Output> = Box::pin(fut);
+        let box_fut_2: FutureNonSend<'static, F::Output> = unsafe { std::mem::transmute(box_fut) };
 
-        let futs = self
-            .futures_background
-            .try_lock()
-            .expect("Failed to lock futures queue for background tasks");
-        futs.push(Box::pin(async move {
-            let res = fut.await;
-            tx.send(res).ok();
-        }));
-
-        // NOTE: We might be resuming lua futures, need to signal that a
-        // new background future is ready to break out of futures resumption
-        self.state.message_sender().send_spawned_background_future();
-
-        rx
+        let state = self.state.clone();
+        let sender = state.message_sender();
+        state.increment_future_count();
+        sender.send_future_spawned();
+        task::spawn_local(async move {
+            let result = box_fut_2.await;
+            state.decrement_future_count();
+            sender.send_future_completed();
+            result
+        })
     }
 
     /**
@@ -100,23 +63,20 @@ impl<'fut> Scheduler<'fut> {
 
         If the given future returns a [`LuaError`], that error will be passed to the given `thread`.
     */
-    pub fn spawn_thread<F, FR>(
+    pub fn spawn_thread<'fut, 'lua, F, FR>(
         &'fut self,
-        lua: &'fut Lua,
-        thread: impl IntoLuaThread<'fut>,
+        lua: &'lua Lua,
+        thread: impl IntoLuaThread<'lua>,
         fut: F,
     ) -> LuaResult<()>
     where
-        FR: IntoLuaMulti<'fut>,
+        'lua: 'fut,
+        FR: IntoLuaMulti<'lua>,
         F: Future<Output = LuaResult<FR>> + 'fut,
     {
         let thread = thread.into_lua_thread(lua)?;
-        let futs = self.futures_lua.try_lock().expect(
-            "Failed to lock futures queue - \
-            can't schedule future lua threads during futures resumption",
-        );
 
-        futs.push(Box::pin(async move {
+        self.spawn_local(async move {
             match fut.await.and_then(|rets| rets.into_lua_multi(lua)) {
                 Err(e) => {
                     self.push_err(lua, thread, e)
@@ -127,11 +87,11 @@ impl<'fut> Scheduler<'fut> {
                         .expect("Failed to schedule future thread");
                 }
             }
-        }));
+        });
 
         // NOTE: We might be resuming background futures, need to signal that a
         // new background future is ready to break out of futures resumption
-        self.state.message_sender().send_spawned_lua_future();
+        self.state.message_sender().send_future_spawned();
 
         Ok(())
     }

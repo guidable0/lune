@@ -17,8 +17,7 @@ pub(crate) mod cli;
 use cli::Cli;
 use console::style;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .compact()
         .with_env_filter(tracing_subscriber::filter::EnvFilter::from_default_env())
@@ -26,7 +25,7 @@ async fn main() -> ExitCode {
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .with_level(true)
         .init();
-    match Cli::parse().run().await {
+    match Cli::parse().run() {
         Ok(code) => code,
         Err(err) => {
             eprintln!(

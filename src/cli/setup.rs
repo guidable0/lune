@@ -1,9 +1,8 @@
-use std::{borrow::BorrowMut, env::current_dir, io::ErrorKind, path::PathBuf};
+use std::{borrow::BorrowMut, env::current_dir, fs, io::ErrorKind, path::PathBuf};
 
 use anyhow::Result;
 use include_dir::{include_dir, Dir};
 use thiserror::Error;
-use tokio::fs;
 
 // TODO: Use a library that supports json with comments since VSCode settings may contain comments
 use serde_json::Value as JsonValue;
@@ -38,17 +37,17 @@ fn vscode_path() -> PathBuf {
         .join("settings.json")
 }
 
-async fn read_or_create_vscode_settings_json() -> Result<JsonValue, SetupError> {
+fn read_or_create_vscode_settings_json() -> Result<JsonValue, SetupError> {
     let path_file = vscode_path();
     let mut path_dir = path_file.clone();
     path_dir.pop();
-    match fs::read(&path_file).await {
+    match fs::read(&path_file) {
         Err(e) if e.kind() == ErrorKind::NotFound => {
             // TODO: Make sure that VSCode is actually installed, or
             // let the user choose their editor for interactive setup
-            match fs::create_dir_all(path_dir).await {
+            match fs::create_dir_all(path_dir) {
                 Err(_) => Err(SetupError::Write),
-                Ok(_) => match fs::write(path_file, "{}").await {
+                Ok(_) => match fs::write(path_file, "{}") {
                     Err(_) => Err(SetupError::Write),
                     Ok(_) => Ok(JsonValue::Object(serde_json::Map::new())),
                 },
@@ -62,10 +61,10 @@ async fn read_or_create_vscode_settings_json() -> Result<JsonValue, SetupError> 
     }
 }
 
-async fn write_vscode_settings_json(value: JsonValue) -> Result<(), SetupError> {
+fn write_vscode_settings_json(value: JsonValue) -> Result<(), SetupError> {
     match serde_json::to_vec_pretty(&value) {
         Err(_) => Err(SetupError::Serialize),
-        Ok(json) => match fs::write(vscode_path(), json).await {
+        Ok(json) => match fs::write(vscode_path(), json) {
             Err(_) => Err(SetupError::Write),
             Ok(_) => Ok(()),
         },
@@ -99,18 +98,16 @@ fn add_values_to_vscode_settings_json(value: JsonValue) -> JsonValue {
     settings_json
 }
 
-pub async fn run_setup() {
+pub fn run_setup() {
     generate_typedef_files_from_definitions(&TYPEDEFS_DIR)
-        .await
         .expect("Failed to generate typedef files");
     // TODO: Let the user interactively choose what editor to set up
-    let res = async {
-        let settings = read_or_create_vscode_settings_json().await?;
+    let res = (|| {
+        let settings = read_or_create_vscode_settings_json()?;
         let modified = add_values_to_vscode_settings_json(settings);
-        write_vscode_settings_json(modified).await?;
+        write_vscode_settings_json(modified)?;
         Ok::<_, SetupError>(())
-    }
-    .await;
+    })();
     let message = match res {
         Ok(_) => "These settings have been added to your workspace for Visual Studio Code:",
         Err(_) => "To finish setting up your editor, add these settings to your workspace:",

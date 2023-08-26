@@ -2,6 +2,7 @@ use std::{
     env::{self, consts},
     path,
     process::{ExitStatus, Stdio},
+    sync::Weak,
 };
 
 use dunce::canonicalize;
@@ -23,7 +24,7 @@ exit(...)
 yield()
 "#;
 
-pub fn create(lua: &'static Lua) -> LuaResult<LuaTable> {
+pub fn create(lua: &Lua) -> LuaResult<LuaTable> {
     let cwd_str = {
         let cwd = canonicalize(env::current_dir()?)?;
         let cwd_str = cwd.to_string_lossy().to_string();
@@ -63,8 +64,10 @@ pub fn create(lua: &'static Lua) -> LuaResult<LuaTable> {
         .get::<_, LuaFunction>("yield")?;
     let set_scheduler_exit_code = lua.create_function(|lua, code: Option<u8>| {
         let sched = lua
-            .app_data_ref::<&Scheduler>()
-            .expect("Lua struct is missing scheduler");
+            .app_data_ref::<Weak<Scheduler>>()
+            .expect("Lua struct is missing scheduler")
+            .upgrade()
+            .expect("Lua struct dropped scheduler");
         sched.set_exit_code(code.unwrap_or_default());
         Ok(())
     })?;
@@ -172,8 +175,10 @@ async fn process_spawn(
         scheduler will not drive those futures to completion
     */
     let sched = lua
-        .app_data_ref::<&Scheduler>()
-        .expect("Lua struct is missing scheduler");
+        .app_data_ref::<Weak<Scheduler>>()
+        .expect("Lua struct is missing scheduler")
+        .upgrade()
+        .expect("Lua struct dropped scheduler");
 
     let (status, stdout, stderr) = sched
         .spawn(spawn_command(program, args, options))

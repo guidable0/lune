@@ -1,4 +1,4 @@
-use std::process::ExitCode;
+use std::{process::ExitCode, sync::Arc};
 
 use mlua::Lua;
 
@@ -9,7 +9,7 @@ mod scheduler;
 
 pub(crate) mod util;
 
-use self::scheduler::{LuaSchedulerExt, Scheduler};
+use self::scheduler::Scheduler;
 
 pub use error::LuneError;
 
@@ -18,8 +18,8 @@ pub use error::LuneError;
 // will probably be more obvious when browsing files
 #[derive(Debug, Clone)]
 pub struct Lune {
-    lua: &'static Lua,
-    scheduler: &'static Scheduler<'static>,
+    lua: Arc<Lua>,
+    scheduler: Arc<Scheduler>,
     args: Vec<String>,
 }
 
@@ -27,19 +27,17 @@ impl Lune {
     /**
         Creates a new Lune runtime, with a new Luau VM and task scheduler.
     */
-    #[allow(clippy::new_without_default)]
+    #[allow(clippy::new_without_default, clippy::arc_with_non_send_sync)]
     pub fn new() -> Self {
-        /*
-            FUTURE: Stop leaking these when we have removed the lifetime
-            on the scheduler and can place them in lua app data using arc
+        let lua = Arc::new(Lua::new());
+        let scheduler = Arc::new(Scheduler::new());
 
-            See the scheduler struct for more notes
-        */
-        let lua = Lua::new().into_static();
-        let scheduler = Scheduler::new().into_static();
+        lua.set_app_data(Arc::downgrade(&lua));
+        lua.set_app_data(Arc::downgrade(&scheduler));
 
-        lua.set_scheduler(scheduler);
-        globals::inject_all(lua).expect("Failed to inject lua globals");
+        scheduler.set_interrupt_for(&lua);
+
+        globals::inject_all(&lua).expect("Failed to inject lua globals");
 
         Self {
             lua,
@@ -65,7 +63,7 @@ impl Lune {
 
         This will preserve any modifications to global values / context.
     */
-    pub async fn run(
+    pub fn run(
         &mut self,
         script_name: impl AsRef<str>,
         script_contents: impl AsRef<[u8]>,
@@ -75,8 +73,8 @@ impl Lune {
             .load(script_contents.as_ref())
             .set_name(script_name.as_ref());
 
-        self.scheduler.push_back(self.lua, main, ())?;
+        self.scheduler.push_back(&self.lua, main, ())?;
 
-        Ok(self.scheduler.run_to_completion(self.lua).await)
+        Ok(self.scheduler.run_to_completion(&self.lua))
     }
 }

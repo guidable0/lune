@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     env,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use mlua::prelude::*;
@@ -26,8 +26,7 @@ use crate::lune::{
     path will first be transformed into an absolute path.
 */
 #[derive(Debug, Clone)]
-pub(super) struct RequireContext<'lua> {
-    lua: &'lua Lua,
+pub(super) struct RequireContext {
     use_cwd_relative_paths: bool,
     working_directory: PathBuf,
     cache_builtins: Arc<AsyncMutex<HashMap<LuneBuiltin, LuaResult<LuaRegistryKey>>>>,
@@ -35,20 +34,19 @@ pub(super) struct RequireContext<'lua> {
     cache_pending: Arc<AsyncMutex<HashMap<PathBuf, Sender<()>>>>,
 }
 
-impl<'lua> RequireContext<'lua> {
+impl RequireContext {
     /**
-        Creates a new require context for the given [`Lua`] struct.
+        Creates a new require context.
 
         Note that this require context is global and only one require
         context should be created per [`Lua`] struct, creating more
         than one context may lead to undefined require-behavior.
     */
-    pub fn new(lua: &'lua Lua) -> Self {
+    pub fn new() -> Self {
         // FUTURE: We could load some kind of config or env var
         // to check if we should be using cwd-relative paths
         let cwd = env::current_dir().expect("Failed to get current working directory");
         Self {
-            lua,
             use_cwd_relative_paths: false,
             working_directory: cwd,
             cache_builtins: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -118,7 +116,11 @@ impl<'lua> RequireContext<'lua> {
 
         Will panic if the path has not been cached, use [`is_cached`] first.
     */
-    pub fn get_from_cache(&self, abs_path: impl AsRef<Path>) -> LuaResult<LuaMultiValue<'lua>> {
+    pub fn get_from_cache<'lua>(
+        &self,
+        lua: &'lua Lua,
+        abs_path: impl AsRef<Path>,
+    ) -> LuaResult<LuaMultiValue<'lua>> {
         let results = self
             .cache_results
             .try_lock()
@@ -130,8 +132,7 @@ impl<'lua> RequireContext<'lua> {
         match cached {
             Err(e) => Err(e.clone()),
             Ok(k) => {
-                let multi_vec = self
-                    .lua
+                let multi_vec = lua
                     .registry_value::<Vec<LuaValue>>(k)
                     .expect("Missing require result in lua registry");
                 Ok(LuaMultiValue::from_vec(multi_vec))
@@ -144,8 +145,9 @@ impl<'lua> RequireContext<'lua> {
 
         Will panic if the path has not been cached, use [`is_cached`] first.
     */
-    pub async fn wait_for_cache(
+    pub async fn wait_for_cache<'lua>(
         &self,
+        lua: &'lua Lua,
         abs_path: impl AsRef<Path>,
     ) -> LuaResult<LuaMultiValue<'lua>> {
         let mut thread_recv = {
@@ -161,43 +163,43 @@ impl<'lua> RequireContext<'lua> {
 
         thread_recv.recv().await.into_lua_err()?;
 
-        self.get_from_cache(abs_path.as_ref())
+        self.get_from_cache(lua, abs_path.as_ref())
     }
 
-    async fn load(
+    async fn load<'lua>(
         &self,
+        lua: &'lua Lua,
         abs_path: impl AsRef<Path>,
         rel_path: impl AsRef<Path>,
     ) -> LuaResult<LuaRegistryKey> {
         let abs_path = abs_path.as_ref();
         let rel_path = rel_path.as_ref();
 
-        let sched = self
-            .lua
-            .app_data_ref::<&Scheduler>()
-            .expect("Lua struct is missing scheduler");
+        let sched = lua
+            .app_data_ref::<Weak<Scheduler>>()
+            .expect("Lua struct is missing scheduler")
+            .upgrade()
+            .expect("Lua struct dropped scheduler");
 
         // Read the file at the given path, try to parse and
         // load it into a new lua thread that we can schedule
         let file_contents = fs::read(&abs_path).await?;
-        let file_thread = self
-            .lua
+        let file_thread = lua
             .load(file_contents)
             .set_name(rel_path.to_string_lossy().to_string())
             .into_function()?
-            .into_lua_thread(self.lua)?;
+            .into_lua_thread(lua)?;
 
         // Schedule the thread to run, wait for it to finish running
-        let thread_id = sched.push_back(self.lua, file_thread, ())?;
-        let thread_res = sched.wait_for_thread(self.lua, thread_id).await;
+        let thread_id = sched.push_back(lua, file_thread, ())?;
+        let thread_res = sched.wait_for_thread(lua, thread_id).await;
 
         // Return the result of the thread, storing any lua value(s) in the registry
         match thread_res {
             Err(e) => Err(e),
             Ok(v) => {
                 let multi_vec = v.into_vec();
-                let multi_key = self
-                    .lua
+                let multi_key = lua
                     .create_registry_value(multi_vec)
                     .expect("Failed to store require result in registry - out of memory");
                 Ok(multi_key)
@@ -208,8 +210,9 @@ impl<'lua> RequireContext<'lua> {
     /**
         Loads (requires) the file at the given path.
     */
-    pub async fn load_with_caching(
+    pub async fn load_with_caching<'lua>(
         &self,
+        lua: &'lua Lua,
         abs_path: impl AsRef<Path>,
         rel_path: impl AsRef<Path>,
     ) -> LuaResult<LuaMultiValue<'lua>> {
@@ -224,12 +227,11 @@ impl<'lua> RequireContext<'lua> {
             .insert(abs_path.to_path_buf(), broadcast_tx);
 
         // Try to load at this abs path
-        let load_res = self.load(abs_path, rel_path).await;
+        let load_res = self.load(lua, abs_path, rel_path).await;
         let load_val = match &load_res {
             Err(e) => Err(e.clone()),
             Ok(k) => {
-                let multi_vec = self
-                    .lua
+                let multi_vec = lua
                     .registry_value::<Vec<LuaValue>>(k)
                     .expect("Failed to fetch require result from registry");
                 Ok(LuaMultiValue::from_vec(multi_vec))
@@ -261,10 +263,11 @@ impl<'lua> RequireContext<'lua> {
     /**
         Loads (requires) the builtin with the given name.
     */
-    pub fn load_builtin(&self, name: impl AsRef<str>) -> LuaResult<LuaMultiValue<'lua>>
-    where
-        'lua: 'static, // FIXME: Remove static lifetime bound here when builtin libraries no longer need it
-    {
+    pub fn load_builtin<'lua>(
+        &self,
+        lua: &'lua Lua,
+        name: impl AsRef<str>,
+    ) -> LuaResult<LuaMultiValue<'lua>> {
         let builtin: LuneBuiltin = match name.as_ref().parse() {
             Err(e) => return Err(LuaError::runtime(e)),
             Ok(b) => b,
@@ -279,8 +282,7 @@ impl<'lua> RequireContext<'lua> {
             return match res {
                 Err(e) => return Err(e.clone()),
                 Ok(key) => {
-                    let multi_vec = self
-                        .lua
+                    let multi_vec = lua
                         .registry_value::<Vec<LuaValue>>(key)
                         .expect("Missing builtin result in lua registry");
                     Ok(LuaMultiValue::from_vec(multi_vec))
@@ -288,7 +290,7 @@ impl<'lua> RequireContext<'lua> {
             };
         };
 
-        let result = builtin.create(self.lua);
+        let result = builtin.create(lua);
 
         cache.insert(
             builtin,
@@ -296,8 +298,7 @@ impl<'lua> RequireContext<'lua> {
                 Err(e) => Err(e),
                 Ok(multi) => {
                     let multi_vec = multi.into_vec();
-                    let multi_key = self
-                        .lua
+                    let multi_key = lua
                         .create_registry_value(multi_vec)
                         .expect("Failed to store require result in registry - out of memory");
                     Ok(multi_key)
